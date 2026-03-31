@@ -1,24 +1,77 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
+const router = express.Router();
+const dotenv = require('dotenv');
+const bcryptjs = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const pino = require('pino');
 const { body, validationResult } = require('express-validator');
 const connectToDatabase = require('../models/db');
 
-const router = express.Router();
+dotenv.config();
 
-router.post(
-  '/register',
+const logger = pino();
+const JWT_SECRET = process.env.JWT_SECRET;
+
+router.post('/register', async (req, res) => {
+  try {
+    const db = await connectToDatabase();
+    const collection = db.collection('users');
+
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existingUser = await collection.findOne({ email: normalizedEmail });
+
+    if (existingUser) {
+      logger.info('Registration failed: email already exists');
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    const salt = await bcryptjs.genSalt(10);
+    const hash = await bcryptjs.hash(password, salt);
+
+    const user = {
+      email: normalizedEmail,
+      password: hash,
+      createdAt: new Date(),
+    };
+
+    const result = await collection.insertOne(user);
+
+    const authtoken = jwt.sign(
+      {
+        user: {
+          id: result.insertedId.toString(),
+        },
+      },
+      JWT_SECRET || 'setasecret'
+    );
+
+    logger.info('User registered successfully');
+    return res.json({ authtoken, email: normalizedEmail });
+  } catch (e) {
+    logger.error(e);
+    return res.status(500).send('Internal server error');
+  }
+});
+
+router.put(
+  '/update',
   [
-    body('firstName').trim().notEmpty().withMessage('First name is required'),
-    body('lastName').trim().notEmpty().withMessage('Last name is required'),
-    body('email').isEmail().withMessage('Please enter a valid email').normalizeEmail(),
     body('password')
+      .optional()
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters long'),
   ],
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const errors = validationResult(req);
+
       if (!errors.isEmpty()) {
         return res.status(400).json({
           message: errors.array()[0].msg,
@@ -26,116 +79,61 @@ router.post(
         });
       }
 
+      const headerEmail = req.header('email');
+
+      if (!headerEmail) {
+        return res.status(400).json({
+          message: 'Email header is required',
+        });
+      }
+
+      const email = headerEmail.trim().toLowerCase();
+
       const db = await connectToDatabase();
       const usersCollection = db.collection('users');
-
-      const firstName = req.body.firstName.trim();
-      const lastName = req.body.lastName.trim();
-      const email = req.body.email.trim().toLowerCase();
-      const password = req.body.password;
 
       const existingUser = await usersCollection.findOne({ email });
-      if (existingUser) {
-        return res.status(409).json({
-          message: 'Email is already registered',
-        });
-      }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const name = `${firstName} ${lastName}`.trim();
-
-      const result = await usersCollection.insertOne({
-        firstName,
-        lastName,
-        name,
-        email,
-        password: hashedPassword,
-        createdAt: new Date(),
-      });
-
-      const token = jwt.sign(
-        {
-          userId: result.insertedId.toString(),
-          email,
-          name,
-        },
-        process.env.JWT_SECRET || 'setasecret',
-        { expiresIn: '1h' }
-      );
-
-      return res.status(201).json({
-        token: `Bearer ${token}`,
-        name,
-        email,
-      });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-router.post(
-  '/login',
-  [
-    body('email').isEmail().withMessage('Please enter a valid email').normalizeEmail(),
-    body('password').notEmpty().withMessage('Password is required'),
-  ],
-  async (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({
-          message: errors.array()[0].msg,
-          errors: errors.array(),
-        });
-      }
-
-      // Task 1: Connect to MongoDB through connectToDatabase in db.js
-      const db = await connectToDatabase();
-
-      // Task 2: Access users collection
-      const usersCollection = db.collection('users');
-
-      const email = req.body.email.trim().toLowerCase();
-      const password = req.body.password;
-
-      // Task 3: Check for user credentials in database
-      const user = await usersCollection.findOne({ email });
-
-      // Task 7: Send appropriate message if user not found
-      if (!user) {
+      if (!existingUser) {
         return res.status(404).json({
           message: 'User not found',
         });
       }
 
-      // Task 4: Check if password matches encrypted password
-      const passwordMatches = await bcrypt.compare(password, user.password);
-      if (!passwordMatches) {
-        return res.status(401).json({
-          message: 'Incorrect password',
+      const updateFields = {
+        updatedAt: new Date(),
+      };
+
+      if (req.body.password) {
+        const salt = await bcryptjs.genSalt(10);
+        updateFields.password = await bcryptjs.hash(req.body.password, salt);
+      }
+
+      if (Object.keys(updateFields).length === 1) {
+        return res.status(400).json({
+          message: 'No valid fields to update',
         });
       }
 
-      // Task 5: Fetch user details from database
-      const userName =
-        user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-      const userEmail = user.email;
-
-      // Task 6: Create JWT authentication with user._id as payload
-      const authtoken = jwt.sign(
-        { userId: user._id.toString() },
-        process.env.JWT_SECRET || 'setasecret',
-        { expiresIn: '1h' }
+      await usersCollection.updateOne(
+        { _id: existingUser._id },
+        { $set: updateFields }
       );
 
-      return res.status(200).json({
-        authtoken: `Bearer ${authtoken}`,
-        userName,
-        userEmail,
-      });
-    } catch (error) {
-      next(error);
+      const authtoken = jwt.sign(
+        {
+          user: {
+            id: existingUser._id.toString(),
+          },
+        },
+        JWT_SECRET || 'setasecret'
+      );
+
+      logger.info('User updated successfully');
+      return res.json({ authtoken });
+    } catch (e) {
+      logger.error(e);
+      return res.status(500).send('Internal server error');
     }
   }
 );
