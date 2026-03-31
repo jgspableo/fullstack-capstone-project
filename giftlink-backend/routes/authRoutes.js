@@ -1,56 +1,77 @@
 const express = require('express');
-const router = express.Router();
-const dotenv = require('dotenv');
-const bcryptjs = require('bcryptjs');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const pino = require('pino');
+const { body, validationResult } = require('express-validator');
 const connectToDatabase = require('../models/db');
 
-dotenv.config();
+const router = express.Router();
 
-const logger = pino();
-const JWT_SECRET = process.env.JWT_SECRET;
+router.post(
+  '/register',
+  [
+    body('firstName').trim().notEmpty().withMessage('First name is required'),
+    body('lastName').trim().notEmpty().withMessage('Last name is required'),
+    body('email').isEmail().withMessage('Please enter a valid email').normalizeEmail(),
+    body('password')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters long'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          message: errors.array()[0].msg,
+          errors: errors.array(),
+        });
+      }
 
-router.post('/register', async (req, res) => {
-  try {
-    const db = await connectToDatabase();
-    const collection = db.collection('users');
+      const db = await connectToDatabase();
+      const usersCollection = db.collection('users');
 
-    const { email, password } = req.body;
+      const firstName = req.body.firstName.trim();
+      const lastName = req.body.lastName.trim();
+      const email = req.body.email.trim().toLowerCase();
+      const password = req.body.password;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+      const existingUser = await usersCollection.findOne({ email });
+      if (existingUser) {
+        return res.status(409).json({
+          message: 'Email is already registered',
+        });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const name = `${firstName} ${lastName}`.trim();
+
+      const result = await usersCollection.insertOne({
+        firstName,
+        lastName,
+        name,
+        email,
+        password: hashedPassword,
+        createdAt: new Date(),
+      });
+
+      const token = jwt.sign(
+        {
+          userId: result.insertedId.toString(),
+          email,
+          name,
+        },
+        process.env.JWT_SECRET || 'setasecret',
+        { expiresIn: '1h' }
+      );
+
+      return res.status(201).json({
+        token: `Bearer ${token}`,
+        name,
+        email,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    const existingUser = await collection.findOne({ email });
-
-    if (existingUser) {
-      logger.info('Registration failed: email already exists');
-      return res.status(400).json({ error: 'Email already exists' });
-    }
-
-    const salt = await bcryptjs.genSalt(10);
-    const hash = await bcryptjs.hash(password, salt);
-
-    const user = {
-      email,
-      password: hash,
-      createdAt: new Date(),
-    };
-
-    const result = await collection.insertOne(user);
-
-    const authtoken = jwt.sign(
-      { user: { id: result.insertedId.toString() } },
-      JWT_SECRET
-    );
-
-    logger.info('User registered successfully');
-    res.json({ authtoken, email });
-  } catch (e) {
-    logger.error(e);
-    return res.status(500).send('Internal server error');
   }
-});
+);
 
 module.exports = router;
