@@ -7,8 +7,9 @@ const pinoLogger = require('./logger');
 const connectToDatabase = require('./models/db');
 const { loadData } = require("./util/import-mongo/index");
 
+// Route files
 const giftroutes = require('./routes/giftRoutes');
-// const searchRoutes = require('./routes/searchRoutes');
+const searchRoutes = require('./routes/searchRoutes');
 
 const app = express();
 app.use("*", cors());
@@ -29,7 +30,7 @@ app.use(pinoHttp({ logger }));
 
 // Use Routes
 app.use('/api/gifts', giftroutes);
-// app.use('/api/search', searchRoutes);
+app.use('/api/search', searchRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
