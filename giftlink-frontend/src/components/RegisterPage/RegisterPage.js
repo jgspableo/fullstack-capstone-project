@@ -1,4 +1,7 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { urlConfig } from '../../config';
+import { useAppContext } from '../../context/AuthContext';
 import './RegisterPage.css';
 
 function RegisterPage() {
@@ -6,9 +9,51 @@ function RegisterPage() {
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const handleRegister = () => {
-    console.log('Register clicked:', { firstName, lastName, email, password });
+  const navigate = useNavigate();
+  const { setIsLoggedIn, setUserName } = useAppContext();
+
+  const handleRegister = async () => {
+    try {
+      setErrorMessage('');
+
+      if (!urlConfig.backendUrl) {
+        setErrorMessage('Backend URL is not configured.');
+        return;
+      }
+
+      const response = await fetch(`${urlConfig.backendUrl}/api/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          email,
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        sessionStorage.setItem('auth-token', data.token);
+        sessionStorage.setItem('name', data.name);
+        sessionStorage.setItem('email', data.email);
+
+        setUserName(data.name);
+        setIsLoggedIn(true);
+
+        navigate('/app');
+      } else {
+        setErrorMessage(data.message || 'Registration failed.');
+      }
+    } catch (e) {
+      console.log('Error fetching details: ' + e.message);
+      setErrorMessage('Unable to register right now.');
+    }
   };
 
   return (
@@ -52,6 +97,11 @@ function RegisterPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Enter email"
               />
+              {errorMessage && (
+                <div className="text-danger mt-2" style={{ fontSize: '0.9rem' }}>
+                  {errorMessage}
+                </div>
+              )}
             </div>
 
             <div className="form-group mb-3">
@@ -71,7 +121,10 @@ function RegisterPage() {
             </button>
 
             <p className="mt-4 text-center">
-              Already a member? <a href="/app/login" className="text-primary">Login</a>
+              Already a member?{' '}
+              <a href="/app/login" className="text-primary">
+                Login
+              </a>
             </p>
           </div>
         </div>
