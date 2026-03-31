@@ -74,4 +74,70 @@ router.post(
   }
 );
 
+router.post(
+  '/login',
+  [
+    body('email').isEmail().withMessage('Please enter a valid email').normalizeEmail(),
+    body('password').notEmpty().withMessage('Password is required'),
+  ],
+  async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          message: errors.array()[0].msg,
+          errors: errors.array(),
+        });
+      }
+
+      // Task 1: Connect to MongoDB through connectToDatabase in db.js
+      const db = await connectToDatabase();
+
+      // Task 2: Access users collection
+      const usersCollection = db.collection('users');
+
+      const email = req.body.email.trim().toLowerCase();
+      const password = req.body.password;
+
+      // Task 3: Check for user credentials in database
+      const user = await usersCollection.findOne({ email });
+
+      // Task 7: Send appropriate message if user not found
+      if (!user) {
+        return res.status(404).json({
+          message: 'User not found',
+        });
+      }
+
+      // Task 4: Check if password matches encrypted password
+      const passwordMatches = await bcrypt.compare(password, user.password);
+      if (!passwordMatches) {
+        return res.status(401).json({
+          message: 'Incorrect password',
+        });
+      }
+
+      // Task 5: Fetch user details from database
+      const userName =
+        user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+      const userEmail = user.email;
+
+      // Task 6: Create JWT authentication with user._id as payload
+      const authtoken = jwt.sign(
+        { userId: user._id.toString() },
+        process.env.JWT_SECRET || 'setasecret',
+        { expiresIn: '1h' }
+      );
+
+      return res.status(200).json({
+        authtoken: `Bearer ${authtoken}`,
+        userName,
+        userEmail,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 module.exports = router;
